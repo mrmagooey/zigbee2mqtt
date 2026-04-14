@@ -19,6 +19,7 @@ export default class Zigbee {
     private groupLookup = new Map<number /* group ID */, Group>();
     private deviceLookup = new Map<string /* IEEE address */, Device>();
     private coordinatorIeeeAddr!: string;
+    private _isReconnecting = false;
 
     constructor(eventBus: EventBus) {
         this.eventBus = eventBus;
@@ -28,13 +29,15 @@ export default class Zigbee {
         return this.#herdsman;
     }
 
-    async start(abortSignal: AbortSignal): Promise<boolean> {
-        const infoHerdsman = await utils.getDependencyVersion("zigbee-herdsman");
-        logger.info(`Starting zigbee-herdsman (${infoHerdsman.version})`);
+    get isReconnecting(): boolean {
+        return this._isReconnecting;
+    }
+
+    private buildHerdsmanSettings(): ConstructorParameters<typeof Controller>[0] {
         const panId = settings.get().advanced.pan_id;
         const extPanId = settings.get().advanced.ext_pan_id;
         const networkKey = settings.get().advanced.network_key;
-        const herdsmanSettings = {
+        return {
             network: {
                 panID: panId === "GENERATE" ? this.generatePanID() : panId,
                 extendedPanID: extPanId === "GENERATE" ? this.generateExtPanID() : extPanId,
@@ -58,28 +61,9 @@ export default class Zigbee {
             },
             acceptJoiningDeviceHandler: this.acceptJoiningDeviceHandler,
         };
+    }
 
-        logger.debug(
-            () =>
-                `Using zigbee-herdsman with settings: '${stringify(JSON.stringify(herdsmanSettings).replaceAll(JSON.stringify(herdsmanSettings.network.networkKey), '"HIDDEN"'))}'`,
-        );
-
-        let startResult: StartResult;
-        try {
-            this.#herdsman = new Controller(herdsmanSettings);
-            startResult = await this.#herdsman.start(abortSignal);
-        } catch (error) {
-            logger.error("Error while starting zigbee-herdsman");
-            throw error;
-        }
-
-        this.coordinatorIeeeAddr = this.#herdsman.getDevicesByType("Coordinator")[0].ieeeAddr;
-        await this.resolveDevicesDefinitions(false, abortSignal);
-
-        if (abortSignal.aborted) {
-            return false;
-        }
-
+    private registerHerdsmanEventHandlers(): void {
         this.#herdsman.on("adapterDisconnected", () => this.eventBus.emitAdapterDisconnected());
         this.#herdsman.on("lastSeenChanged", (data: ZHEvents.LastSeenChangedPayload) => {
             // biome-ignore lint/style/noNonNullAssertion: assumed valid
@@ -133,6 +117,55 @@ export default class Zigbee {
             if (device.zh.type === "Coordinator") return;
             this.eventBus.emitDeviceMessage({...data, device});
         });
+    }
+
+    private refreshLookupCaches(): void {
+        for (const [ieeeAddr, device] of this.deviceLookup) {
+            const newZhDevice = this.#herdsman.getDeviceByIeeeAddr(ieeeAddr);
+            if (newZhDevice) {
+                device.zh = newZhDevice;
+            } else {
+                this.deviceLookup.delete(ieeeAddr);
+            }
+        }
+        for (const [groupID, group] of this.groupLookup) {
+            const newZhGroup = this.#herdsman.getGroupByID(groupID);
+            if (newZhGroup) {
+                group.zh = newZhGroup;
+            } else {
+                this.groupLookup.delete(groupID);
+            }
+        }
+        this.coordinatorIeeeAddr = this.#herdsman.getDevicesByType("Coordinator")[0].ieeeAddr;
+    }
+
+    async start(abortSignal: AbortSignal): Promise<boolean> {
+        const infoHerdsman = await utils.getDependencyVersion("zigbee-herdsman");
+        logger.info(`Starting zigbee-herdsman (${infoHerdsman.version})`);
+        const herdsmanSettings = this.buildHerdsmanSettings();
+
+        logger.debug(
+            () =>
+                `Using zigbee-herdsman with settings: '${stringify(JSON.stringify(herdsmanSettings).replaceAll(JSON.stringify(herdsmanSettings.network.networkKey), '"HIDDEN"'))}'`,
+        );
+
+        let startResult: StartResult;
+        try {
+            this.#herdsman = new Controller(herdsmanSettings);
+            startResult = await this.#herdsman.start(abortSignal);
+        } catch (error) {
+            logger.error("Error while starting zigbee-herdsman");
+            throw error;
+        }
+
+        this.coordinatorIeeeAddr = this.#herdsman.getDevicesByType("Coordinator")[0].ieeeAddr;
+        await this.resolveDevicesDefinitions(false, abortSignal);
+
+        if (abortSignal.aborted) {
+            return false;
+        }
+
+        this.registerHerdsmanEventHandlers();
 
         logger.info(`zigbee-herdsman started (${startResult})`);
         logger.info(`Coordinator firmware version: '${stringify(await this.getCoordinatorVersion())}'`);
@@ -185,6 +218,35 @@ export default class Zigbee {
         }
 
         return true;
+    }
+
+    async reconnect(): Promise<void> {
+        this._isReconnecting = true;
+        try {
+            logger.info("Attempting to reconnect zigbee adapter...");
+
+            // Best-effort stop old herdsman (may be in broken state)
+            try {
+                await this.#herdsman.stop();
+            } catch (error) {
+                logger.warning(`Failed to cleanly stop previous herdsman instance: ${(error as Error).message}`);
+            }
+
+            // Create and start new herdsman instance
+            this.#herdsman = new Controller(this.buildHerdsmanSettings());
+            await this.#herdsman.start(new AbortController().signal);
+
+            // Refresh wrapper objects to point at new herdsman data
+            this.refreshLookupCaches();
+            await this.resolveDevicesDefinitions(true);
+
+            // Re-register event handlers on new instance
+            this.registerHerdsmanEventHandlers();
+
+            logger.info("Successfully reconnected zigbee adapter");
+        } finally {
+            this._isReconnecting = false;
+        }
     }
 
     private logDeviceInterview(data: eventdata.DeviceInterview): void {

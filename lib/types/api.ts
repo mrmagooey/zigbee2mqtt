@@ -206,6 +206,9 @@ export interface Zigbee2MQTTSettings {
         channel: number;
         adapter_concurrent?: number;
         adapter_delay?: number;
+        adapter_reconnect_max_retries: number;
+        adapter_reconnect_initial_delay: number;
+        adapter_reconnect_max_delay: number;
         cache_state: boolean;
         cache_state_persistent: boolean;
         cache_state_send_on_startup: boolean;
@@ -342,7 +345,9 @@ export interface Zigbee2MQTTAPI {
     };
 
     "bridge/state": {
-        state: "online" | "offline";
+        state: "online" | "offline" | "reconnecting";
+        reconnect_attempt?: number;
+        reconnect_max?: number;
     };
 
     "bridge/definitions": {

@@ -118,8 +118,20 @@ export class Controller {
 
             if (started) {
                 this.eventBus.onAdapterDisconnected(this, async () => {
-                    logger.error("Adapter disconnected, stopping");
-                    await this.stop(false, 2);
+                    const maxRetries = settings.get().advanced.adapter_reconnect_max_retries;
+
+                    if (maxRetries === 0) {
+                        logger.error("Adapter disconnected, stopping");
+                        await this.stop(false, 2);
+                        return;
+                    }
+
+                    if (this.zigbee.isReconnecting) {
+                        logger.warning("Adapter disconnected again during reconnection, ignoring");
+                        return;
+                    }
+
+                    await this.attemptReconnection(maxRetries);
                 });
             }
         } catch (error) {
@@ -377,6 +389,46 @@ export class Controller {
     async exit(code: number, restart = false): Promise<void> {
         await logger.end();
         return await this.exitCallback(code, restart);
+    }
+
+    private async attemptReconnection(maxRetries: number): Promise<void> {
+        const initialDelay = settings.get().advanced.adapter_reconnect_initial_delay;
+        const maxDelay = settings.get().advanced.adapter_reconnect_max_delay;
+
+        logger.warning(`Adapter disconnected, attempting reconnection (max ${maxRetries} retries)`);
+        await this.publishReconnectingState(0, maxRetries);
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const delay = Math.min(initialDelay * 2 ** (attempt - 1), maxDelay);
+            logger.info(`Reconnection attempt ${attempt}/${maxRetries} in ${delay}s...`);
+            await new Promise((resolve) => setTimeout(resolve, delay * 1000));
+
+            try {
+                await this.zigbee.reconnect();
+                logger.info("Adapter reconnected successfully");
+                const stateData: Zigbee2MQTTAPI["bridge/state"] = {state: "online"};
+                await this.mqtt.publish("bridge/state", JSON.stringify(stateData), {clientOptions: {retain: true, qos: 1}});
+                return;
+            } catch (error) {
+                logger.error(`Reconnection attempt ${attempt}/${maxRetries} failed: ${(error as Error).message}`);
+
+                if (attempt < maxRetries) {
+                    await this.publishReconnectingState(attempt, maxRetries);
+                }
+            }
+        }
+
+        logger.error(`All ${maxRetries} reconnection attempts failed, stopping`);
+        await this.stop(false, 2);
+    }
+
+    private async publishReconnectingState(attempt: number, maxRetries: number): Promise<void> {
+        const stateData: Zigbee2MQTTAPI["bridge/state"] = {
+            state: "reconnecting",
+            reconnect_attempt: attempt,
+            reconnect_max: maxRetries,
+        };
+        await this.mqtt.publish("bridge/state", JSON.stringify(stateData), {clientOptions: {retain: true, qos: 1}});
     }
 
     @bind async publishEntityState(entity: Group | Device, payload: KeyValue, stateChangeReason?: StateChangeReason): Promise<void> {

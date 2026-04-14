@@ -122,6 +122,9 @@ describe("Extension: Bridge", () => {
                     advanced: {
                         adapter_concurrent: undefined,
                         adapter_delay: undefined,
+                        adapter_reconnect_initial_delay: 2,
+                        adapter_reconnect_max_delay: 60,
+                        adapter_reconnect_max_retries: 0,
                         cache_state: true,
                         cache_state_persistent: true,
                         cache_state_send_on_startup: true,

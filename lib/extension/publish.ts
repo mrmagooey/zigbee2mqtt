@@ -97,6 +97,11 @@ export default class Publish extends Extension {
             return;
         }
 
+        if (this.zigbee.isReconnecting) {
+            logger.warning(`Cannot process '${parsedTopic.type}' for '${parsedTopic.ID}': adapter is reconnecting`);
+            return;
+        }
+
         const re = this.zigbee.resolveEntity(parsedTopic.ID);
 
         if (!re) {

@@ -676,6 +676,99 @@ describe("Controller", () => {
         expect(mockExit).toHaveBeenCalledWith(2, false);
     });
 
+    it("Adapter disconnects with reconnection enabled - succeeds on first attempt", async () => {
+        settings.set(["advanced", "adapter_reconnect_max_retries"], 3);
+        await controller.start();
+        await flushPromises();
+        mockMQTTPublishAsync.mockClear();
+
+        await mockZHEvents.adapterDisconnected();
+        await flushPromises();
+
+        // Should publish reconnecting state
+        expect(mockMQTTPublishAsync).toHaveBeenCalledWith(
+            "zigbee2mqtt/bridge/state",
+            expect.stringContaining('"state":"reconnecting"'),
+            expect.objectContaining({retain: true, qos: 1}),
+        );
+
+        // Advance past first reconnection delay (2s initial)
+        await vi.advanceTimersByTimeAsync(2000);
+        await flushPromises();
+
+        // Should have reconnected successfully - published online state
+        expect(mockMQTTPublishAsync).toHaveBeenCalledWith(
+            "zigbee2mqtt/bridge/state",
+            expect.stringContaining('"state":"online"'),
+            expect.objectContaining({retain: true, qos: 1}),
+        );
+
+        // Should NOT have exited
+        expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("Adapter disconnects with reconnection enabled - exhausts retries then stops", async () => {
+        settings.set(["advanced", "adapter_reconnect_max_retries"], 2);
+        settings.set(["advanced", "adapter_reconnect_initial_delay"], 1);
+        await controller.start();
+        await flushPromises();
+
+        // Make herdsman start fail on reconnection
+        mockZHController.start.mockRejectedValue(new Error("Connection refused"));
+
+        await mockZHEvents.adapterDisconnected();
+        await flushPromises();
+
+        // Advance past first attempt delay (1s)
+        await vi.advanceTimersByTimeAsync(1000);
+        await flushPromises();
+
+        // Advance past second attempt delay (2s with exponential backoff)
+        await vi.advanceTimersByTimeAsync(2000);
+        await flushPromises();
+
+        // Should have exited after all retries exhausted
+        expect(mockExit).toHaveBeenCalledTimes(1);
+        expect(mockExit).toHaveBeenCalledWith(2, false);
+
+        // Restore start mock for afterEach cleanup
+        mockZHController.start.mockResolvedValue("reset");
+    });
+
+    it("Adapter disconnects with reconnection disabled (default) - legacy behavior", async () => {
+        // adapter_reconnect_max_retries defaults to 0
+        vi.spyOn(Array.from(controller.extensions)[0], "stop").mockRejectedValueOnce(new Error("failed"));
+        await controller.start();
+        await mockZHEvents.adapterDisconnected();
+        await flushPromises();
+        expect(mockMQTTEndAsync).toHaveBeenCalledTimes(1);
+        expect(mockZHController.stop).toHaveBeenCalledTimes(1);
+        expect(mockExit).toHaveBeenCalledTimes(1);
+        expect(mockExit).toHaveBeenCalledWith(2, false);
+    });
+
+    it("Adapter disconnects during reconnection - ignores duplicate event", async () => {
+        settings.set(["advanced", "adapter_reconnect_max_retries"], 3);
+        settings.set(["advanced", "adapter_reconnect_initial_delay"], 5);
+        await controller.start();
+        await flushPromises();
+
+        // First disconnect triggers reconnection
+        await mockZHEvents.adapterDisconnected();
+        await flushPromises();
+
+        // Second disconnect during reconnection should be ignored
+        await mockZHEvents.adapterDisconnected();
+        await flushPromises();
+
+        // Advance past first reconnection delay
+        await vi.advanceTimersByTimeAsync(5000);
+        await flushPromises();
+
+        // Should have reconnected successfully (only one cycle ran)
+        expect(mockExit).not.toHaveBeenCalled();
+    });
+
     it("does not throw when extension fails to stop on controller stop", async () => {
         vi.spyOn(Array.from(controller.extensions)[0], "stop").mockRejectedValueOnce(new Error("failed"));
         await controller.start();
