@@ -276,6 +276,11 @@ export default class Bind extends Extension {
     }
 
     @bind private async onMQTTMessage(data: eventdata.MQTTMessage): Promise<void> {
+        if (this.zigbee.isReconnecting) {
+            logger.warning(`Cannot process bind/unbind request '${data.topic}': adapter is reconnecting`);
+            return;
+        }
+
         if (data.topic.endsWith("binds/clear")) {
             const message = JSON.parse(data.message) as Zigbee2MQTTAPI["bridge/request/device/binds/clear"];
 

@@ -30,6 +30,8 @@ import Zigbee from "./zigbee";
 export class Controller {
     /** Allows canceling in-progress startup sequence if necessary. Signal can be passed to long-running ops as necessary for finer control. */
     #startAbortController: AbortController | undefined;
+    /** Allows canceling an in-progress reconnection loop (backoff sleep or herdsman start). */
+    #reconnectAbortController: AbortController | undefined;
     public readonly eventBus: EventBus;
     public readonly zigbee: Zigbee;
     public readonly state: State;
@@ -356,6 +358,7 @@ export class Controller {
         logger.info(`Stopping Zigbee2MQTT (restart=${restart}, code=${code}, signal=${signal})`);
 
         this.#startAbortController?.abort(signal ?? "STOPABORT");
+        this.#reconnectAbortController?.abort(signal ?? "STOPABORT");
         this.sdNotify?.notifyStopping();
 
         let localCode = 0;
@@ -395,31 +398,65 @@ export class Controller {
         const initialDelay = settings.get().advanced.adapter_reconnect_initial_delay;
         const maxDelay = settings.get().advanced.adapter_reconnect_max_delay;
 
-        logger.warning(`Adapter disconnected, attempting reconnection (max ${maxRetries} retries)`);
-        await this.publishReconnectingState(0, maxRetries);
+        this.#reconnectAbortController = new AbortController();
+        const signal = this.#reconnectAbortController.signal;
 
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            const delay = Math.min(initialDelay * 2 ** (attempt - 1), maxDelay);
-            logger.info(`Reconnection attempt ${attempt}/${maxRetries} in ${delay}s...`);
-            await new Promise((resolve) => setTimeout(resolve, delay * 1000));
+        this.zigbee.setReconnecting(true);
 
-            try {
-                await this.zigbee.reconnect();
-                logger.info("Adapter reconnected successfully");
-                const stateData: Zigbee2MQTTAPI["bridge/state"] = {state: "online"};
-                await this.mqtt.publish("bridge/state", JSON.stringify(stateData), {clientOptions: {retain: true, qos: 1}});
-                return;
-            } catch (error) {
-                logger.error(`Reconnection attempt ${attempt}/${maxRetries} failed: ${(error as Error).message}`);
+        try {
+            logger.warning(`Adapter disconnected, attempting reconnection (max ${maxRetries} retries)`);
 
-                if (attempt < maxRetries) {
-                    await this.publishReconnectingState(attempt, maxRetries);
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                if (signal.aborted) {
+                    return;
+                }
+
+                await this.publishReconnectingState(attempt, maxRetries);
+
+                const delay = Math.min(initialDelay * 2 ** (attempt - 1), maxDelay);
+                logger.info(`Reconnection attempt ${attempt}/${maxRetries} in ${delay}s...`);
+
+                // Abortable backoff sleep
+                await new Promise<void>((resolve) => {
+                    const timer = setTimeout(resolve, delay * 1000);
+                    signal.addEventListener(
+                        "abort",
+                        () => {
+                            clearTimeout(timer);
+                            resolve();
+                        },
+                        {once: true},
+                    );
+                });
+
+                if (signal.aborted) {
+                    return;
+                }
+
+                try {
+                    await this.zigbee.reconnect(signal);
+
+                    if (signal.aborted) {
+                        return;
+                    }
+
+                    logger.info("Adapter reconnected successfully");
+                    const stateData: Zigbee2MQTTAPI["bridge/state"] = {state: "online"};
+                    await this.mqtt.publish("bridge/state", JSON.stringify(stateData), {clientOptions: {retain: true, qos: 1}});
+                    return;
+                } catch (error) {
+                    logger.error(`Reconnection attempt ${attempt}/${maxRetries} failed: ${(error as Error).message}`);
                 }
             }
-        }
 
-        logger.error(`All ${maxRetries} reconnection attempts failed, stopping`);
-        await this.stop(false, 2);
+            if (!signal.aborted) {
+                logger.error(`All ${maxRetries} reconnection attempts failed, stopping`);
+                await this.stop(false, 2);
+            }
+        } finally {
+            this.zigbee.setReconnecting(false);
+            this.#reconnectAbortController = undefined;
+        }
     }
 
     private async publishReconnectingState(attempt: number, maxRetries: number): Promise<void> {
@@ -427,7 +464,7 @@ export class Controller {
             state: "reconnecting",
             reconnect_attempt: attempt,
             reconnect_max: maxRetries,
-        };
+        } satisfies Zigbee2MQTTAPI["bridge/state"];
         await this.mqtt.publish("bridge/state", JSON.stringify(stateData), {clientOptions: {retain: true, qos: 1}});
     }
 

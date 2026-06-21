@@ -31,7 +31,9 @@ export default class Configure extends Extension {
             const ID = typeof message === "object" ? message.id : message;
             let error: string | undefined;
 
-            if (ID === undefined) {
+            if (this.zigbee.isReconnecting) {
+                error = "Adapter is reconnecting";
+            } else if (ID === undefined) {
                 error = "Invalid payload";
             } else {
                 const device = this.zigbee.resolveEntity(ID);

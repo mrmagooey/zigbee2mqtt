@@ -33,6 +33,10 @@ export default class Zigbee {
         return this._isReconnecting;
     }
 
+    setReconnecting(value: boolean): void {
+        this._isReconnecting = value;
+    }
+
     private buildHerdsmanSettings(): ConstructorParameters<typeof Controller>[0] {
         const panId = settings.get().advanced.pan_id;
         const extPanId = settings.get().advanced.ext_pan_id;
@@ -220,33 +224,36 @@ export default class Zigbee {
         return true;
     }
 
-    async reconnect(): Promise<void> {
-        this._isReconnecting = true;
+    async reconnect(abortSignal: AbortSignal): Promise<void> {
+        logger.info("Attempting to reconnect zigbee adapter...");
+
+        // Best-effort stop old herdsman (may be in broken state)
         try {
-            logger.info("Attempting to reconnect zigbee adapter...");
-
-            // Best-effort stop old herdsman (may be in broken state)
-            try {
-                await this.#herdsman.stop();
-            } catch (error) {
-                logger.warning(`Failed to cleanly stop previous herdsman instance: ${(error as Error).message}`);
-            }
-
-            // Create and start new herdsman instance
-            this.#herdsman = new Controller(this.buildHerdsmanSettings());
-            await this.#herdsman.start(new AbortController().signal);
-
-            // Refresh wrapper objects to point at new herdsman data
-            this.refreshLookupCaches();
-            await this.resolveDevicesDefinitions(true);
-
-            // Re-register event handlers on new instance
-            this.registerHerdsmanEventHandlers();
-
-            logger.info("Successfully reconnected zigbee adapter");
-        } finally {
-            this._isReconnecting = false;
+            await this.#herdsman.stop();
+        } catch (error) {
+            logger.warning(`Failed to cleanly stop previous herdsman instance: ${(error as Error).message}`);
         }
+
+        if (abortSignal.aborted) {
+            return;
+        }
+
+        // Create and start new herdsman instance
+        this.#herdsman = new Controller(this.buildHerdsmanSettings());
+        await this.#herdsman.start(abortSignal);
+
+        if (abortSignal.aborted) {
+            return;
+        }
+
+        // Refresh wrapper objects to point at new herdsman data
+        this.refreshLookupCaches();
+        await this.resolveDevicesDefinitions(true);
+
+        // Re-register event handlers on new instance
+        this.registerHerdsmanEventHandlers();
+
+        logger.info("Successfully reconnected zigbee adapter");
     }
 
     private logDeviceInterview(data: eventdata.DeviceInterview): void {

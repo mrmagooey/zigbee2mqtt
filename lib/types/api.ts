@@ -344,11 +344,7 @@ export interface Zigbee2MQTTAPI {
         namespace: string;
     };
 
-    "bridge/state": {
-        state: "online" | "offline" | "reconnecting";
-        reconnect_attempt?: number;
-        reconnect_max?: number;
-    };
+    "bridge/state": {state: "online" | "offline"} | {state: "reconnecting"; reconnect_attempt: number; reconnect_max: number};
 
     "bridge/definitions": {
         clusters: Readonly<Record<ClusterName, Cluster>>;

@@ -769,6 +769,65 @@ describe("Controller", () => {
         expect(mockExit).not.toHaveBeenCalled();
     });
 
+    it("Adapter disconnects during BACKOFF SLEEP - duplicate disconnect is ignored", async () => {
+        settings.set(["advanced", "adapter_reconnect_max_retries"], 3);
+        settings.set(["advanced", "adapter_reconnect_initial_delay"], 10);
+        await controller.start();
+        await flushPromises();
+        mockZHController.start.mockClear();
+
+        // First disconnect starts reconnection (isReconnecting is now true before the sleep)
+        await mockZHEvents.adapterDisconnected();
+        await flushPromises();
+
+        // Advance time partway into the backoff sleep (5s of a 10s delay) — still sleeping
+        await vi.advanceTimersByTimeAsync(5000);
+        await flushPromises();
+
+        // Second disconnect arrives during the backoff sleep — must be ignored because isReconnecting is true
+        await mockZHEvents.adapterDisconnected();
+        await flushPromises();
+
+        // Advance the remaining sleep and let the reconnect complete
+        await vi.advanceTimersByTimeAsync(5000);
+        await flushPromises();
+
+        // Herdsman start should have been called exactly once (one reconnect cycle, not two)
+        expect(mockZHController.start).toHaveBeenCalledTimes(1);
+        expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("Stop during backoff sleep - no new herdsman is started", async () => {
+        settings.set(["advanced", "adapter_reconnect_max_retries"], 3);
+        settings.set(["advanced", "adapter_reconnect_initial_delay"], 10);
+        await controller.start();
+        await flushPromises();
+        mockZHController.start.mockClear();
+
+        // Trigger reconnection — now inside the backoff sleep
+        await mockZHEvents.adapterDisconnected();
+        await flushPromises();
+
+        // Partially advance into the backoff (still sleeping)
+        await vi.advanceTimersByTimeAsync(3000);
+        await flushPromises();
+
+        // Stop the controller while the reconnect is sleeping
+        stopAfter = false;
+        const stopPromise = controller.stop(false, 0);
+
+        // Advance remaining time — abort signal should have fired, sleep resolves early
+        await vi.advanceTimersByTimeAsync(10000);
+        await flushPromises();
+        await stopPromise;
+
+        // The reconnect was aborted: herdsman start should NOT have been called again
+        expect(mockZHController.start).toHaveBeenCalledTimes(0);
+        // stop() should have exited normally
+        expect(mockExit).toHaveBeenCalledTimes(1);
+        expect(mockExit).toHaveBeenCalledWith(0, false);
+    });
+
     it("does not throw when extension fails to stop on controller stop", async () => {
         vi.spyOn(Array.from(controller.extensions)[0], "stop").mockRejectedValueOnce(new Error("failed"));
         await controller.start();

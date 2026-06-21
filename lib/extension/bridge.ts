@@ -210,6 +210,14 @@ export default class Bridge extends Extension {
         const key = match[1].toLowerCase();
 
         if (key in this.requestLookup) {
+            if (this.zigbee.isReconnecting) {
+                logger.warning(`Cannot process bridge request '${key}': adapter is reconnecting`);
+                const message = utils.parseJSON(data.message, data.message);
+                const response = utils.getResponse(message, {}, "Adapter is reconnecting");
+                await this.mqtt.publish(`bridge/response/${match[1]}`, stringify(response));
+                return;
+            }
+
             const message = utils.parseJSON(data.message, data.message);
 
             try {

@@ -737,7 +737,7 @@
                     "description": "Adapter delay"
                 },
                 "adapter_reconnect_max_retries": {
-                    "type": "number",
+                    "type": "integer",
                     "title": "Adapter reconnect max retries",
                     "description": "Maximum number of reconnection attempts when the Zigbee adapter disconnects unexpectedly. Set to 0 to disable reconnection (immediately stop, legacy behavior).",
                     "default": 0,
@@ -746,16 +746,16 @@
                 },
                 "adapter_reconnect_initial_delay": {
                     "type": "number",
-                    "title": "Adapter reconnect initial delay",
-                    "description": "Initial delay in seconds before the first reconnection attempt. Subsequent attempts use exponential backoff.",
+                    "title": "Adapter reconnect initial delay (seconds)",
+                    "description": "Initial delay in seconds before the first reconnection attempt. Subsequent attempts use exponential backoff. Unit: seconds.",
                     "default": 2,
                     "minimum": 1,
                     "maximum": 300
                 },
                 "adapter_reconnect_max_delay": {
                     "type": "number",
-                    "title": "Adapter reconnect max delay",
-                    "description": "Maximum delay in seconds between reconnection attempts.",
+                    "title": "Adapter reconnect max delay (seconds)",
+                    "description": "Maximum delay in seconds between reconnection attempts. Unit: seconds.",
                     "default": 60,
                     "minimum": 1,
                     "maximum": 600
